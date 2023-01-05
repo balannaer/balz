@@ -1,0 +1,218 @@
+import irc.bot
+import irc.strings
+import irc.client
+import sqlite3
+import os
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+character_db_path = os.path.join(current_dir, "characters.db")
+shop_db_path = os.path.join(current_dir, "shop.db")
+spells_db_path = os.path.join(current_dir, "spells.db")
+abilities_db_path = os.path.join(current_dir, "abilities.db")
+
+class Character:
+    def __init__(self, name, wisdom, charisma, intellect, constitution, strength, dexterity):
+        self.name = name
+        self.wisdom = wisdom
+        self.charisma = charisma
+        self.intellect = intellect
+        self.constitution = constitution
+        self.strength = strength
+        self.dexterity = dexterity
+        self.level = 1
+        self.experience = 0
+        self.next_level = 575
+        self.factor = 1.937
+
+    def add_experience(self, points):
+        self.experience += points
+        while self.experience >= self.next_level:
+            self.level += 1
+            self.next_level = int(self.next_level * self.factor)
+
+class MyBot(irc.bot.SingleServerIRCBot):
+    def __init__(self, character, channel, nickname, server, port=6667):
+        irc.bot.SingleServerIRCBot.__init__(self, [(server, port)], nickname, nickname)
+        self.character = character
+        self.channel = channel
+        self.excluded_words = []
+        self.excluded_rooms = []
+        self.shop_items = {}
+        self.spells = {}
+        self.abilities = {}
+
+    def on_welcome(self, c, e):
+        c.join(self.channel)
+
+    def on_pubmsg(self, c, e):
+        message = e.arguments[0]
+        words = message.split()
+        experience = 0
+        for word in words:
+            if len(word) >= 3 and word not in self.excluded_words:
+                experience += 1
+        self.character.add_experience(experience)
+        if e.target not in self.excluded_rooms:
+            self.character.add_experience(experience)
+
+    def do_command(self, c, e, command):
+        nick = e.source.nick
+        if command == "stats":
+            c.privmsg(self.channel,
+                      f"{self.character.name}: Level {self.character.level}, Experience {self.character.experience}, Next level at {self.character.next_level}")
+        elif command == "shop":
+            c.privmsg(self.channel, "Available items:")
+            for item, cost in self.shop_items.items():
+                c.privmsg(self.channel, f"{item}: {cost} experience points")
+        elif command.startswith("buy"):
+            item = command.split()[1]
+            if item in self.shop_items:
+                cost = self.shop_items[item]
+                if self.character.experience >= cost:
+                    self.character.experience -= cost
+                    c.privmsg(self.channel, f"{nick} has purchased {item} for {cost} experience points")
+                else:
+                    c.privmsg(self.channel, f"{nick} does not have enough experience points to purchase {item}")
+            else:
+                c.privmsg(self.channel, f"{item} is not a valid item")
+        elif command == "spells":
+            c.privmsg(self.channel, "Available spells:")
+            for spell, cost in self.spells.items():
+                c.privmsg(self.channel, f"{spell}: {cost} experience points")
+        elif command.startswith("cast"):
+            spell = command.split()[1]
+            if spell in self.spells:
+                cost = self.spells[spell]
+                if self.character.experience >= cost:
+                    self.character.experience -= cost
+                    c.privmsg(self.channel, f"{nick} has cast {spell} for {cost} experience points")
+                else:
+                    c.privmsg(self.channel, f"{nick} does not have enough experience points to cast {spell}")
+            else:
+                c.privmsg(self.channel, f"{spell} is not a valid spell")
+        elif command == "abilities":
+            c.privmsg(self.channel, "Available abilities:")
+            for ability, cost in self.abilities.items():
+                c.privmsg(self.channel, f"{ability}: {cost} experience points")
+        elif command.startswith("use"):
+            ability = command.split()[1]
+            if ability in self.abilities:
+                cost = self.abilities[ability]
+                if self.character.experience >= cost:
+                    self.character.experience -= cost
+                    c.privmsg(self.channel, f"{nick} has used {ability} for {cost} experience points")
+                else:
+                    c.privmsg(self.channel, f"{nick} does not have enough experience points to use {ability}")
+            elif command.startswith("create"):
+                name = command.split()[1]
+                conn = sqlite3.connect("characters.db")
+                c = conn.cursor()
+                c.execute("SELECT * FROM characters WHERE name=?", (name,))
+                result = c.fetchone()
+                if result:
+                    c.privmsg(self.channel, f"{name} already exists.")
+                else:
+                    wisdom = 8
+                    charisma = 8
+                    intellect = 8
+                    constitution = 8
+                    strength = 8
+                    dexterity = 8
+                    points = 20
+                    c.execute("INSERT INTO characters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                              (name, wisdom, charisma, intellect, constitution, strength, dexterity, 1, 0, 575, 1.937))
+                    conn.commit()
+                    c.privmsg(self.channel,
+                              f"{name} has been created with 8 points in each stat and 20 points to distribute. Each stat point purchase costs 1 point until the base stats have reached 13, and then each purchase costs 2 points. No stat can go beyond 15 at character creation.")
+                    c.privmsg(self.channel,
+                              "To distribute points, use the 'add' command followed by the stat and the number of points you want to add. For example, 'add wisdom 5' will add 5 points to wisdom.")
+                    c.privmsg(self.channel,
+                              "Available stats: wisdom, charisma, intellect, constitution, strength, dexterity")
+            elif command.startswith("add"):
+                parts = command.split()
+                stat = parts[1]
+                points = int(parts[2])
+                conn = sqlite3.connect("characters.db")
+                c = conn.cursor()
+                c.execute("SELECT * FROM characters WHERE name=?", (self.character.name,))
+                wisdom, charisma, intellect, constitution, strength, dexterity, level, experience, next_level, factor = c.fetchone()
+                if stat == "wisdom":
+                    if wisdom + points > 15:
+                        c.privmsg(self.channel, "Cannot add points beyond 15 for a stat.")
+                    elif points > points:
+                        c.privmsg(self.channel, "Not enough points to add.")
+                    else:
+                        wisdom += points
+                        points -= points
+                        c.execute("UPDATE characters SET wisdom=?, points=? WHERE name=?",
+                                  (wisdom, points, self.character.name))
+                        conn.commit()
+                        c.privmsg(self.channel, f"{points} points added to wisdom. {points} points remaining.")
+                elif stat == "charisma":
+                    if charisma + points > 15:
+                        c.privmsg(self.channel, "Cannot add points beyond 15 for a stat.")
+                    elif points > points:
+                        c.privmsg(self.channel, "Not enough points to add.")
+                else:
+                    charisma += points
+                    points -= points
+                    c.execute("UPDATE characters SET charisma=?, points=? WHERE name=?", (charisma, points, self.character.name))
+                    conn.commit()
+                    c.privmsg(self.channel, f"{points} points added to charisma. {points} points remaining.")
+            elif stat == "intellect":
+                if intellect + points > 15:
+                    c.privmsg(self.channel, "Cannot add points beyond 15 for a stat.")
+                elif points > points:
+                    c.privmsg(self.channel, "Not enough points to add.")
+                else:
+                    intellect += points
+                    points -= points
+                    c.execute("UPDATE characters SET intellect=?, points=? WHERE name=?", (intellect, points, self.character.name))
+                    conn.commit()
+                    c.privmsg(self.channel, f"{points} points added to intellect. {points} points remaining.")
+            elif stat == "constitution":
+                if constitution + points > 15:
+                    c.privmsg(self.channel, "Cannot add points beyond 15 for a stat.")
+                elif points > points:
+                    c.privmsg(self.channel, "Not enough points to add.")
+                else:
+                    constitution += points
+                    points -= points
+                    c.execute("UPDATE characters SET constitution=?, points=? WHERE name=?", (constitution, points, self.character.name))
+                    conn.commit()
+                    c.privmsg(self.channel, f"{points} points added to constitution. {points} points remaining.")
+            elif stat == "strength":
+                if strength + points > 15:
+                    c.privmsg(self.channel, "Cannot add points beyond 15 for a stat.")
+                elif points > points:
+                    c.privmsg(self.channel, "Not enough points to add.")
+                else:
+                    strength += points
+                    points -= points
+                    c.execute("UPDATE characters SET strength=?, points=? WHERE name=?", (strength, points, self.character.name))
+                    conn.commit()
+                    c.privmsg(self.channel, f"{points} points added to strength. {points} points remaining.")
+            elif stat == "dexterity":
+                if dexterity + points > 15:
+                    c.privmsg(self.channel, "Cannot add points beyond 15 for a stat.")
+                elif points > points:
+                    c.privmsg(self.channel, "Not enough points to add.")
+                else:
+                    dexterity += points
+                    points -= points
+                    c.execute("UPDATE characters SET dexterity=?, points=? WHERE name=?", (dexterity, points, self.character.name))
+                    conn.commit()
+                    c.privmsg(self.channel, f"{points} points added to dexterity. {points} points remaining.")
+            else:
+                c.privmsg(self.channel, "Invalid stat.")
+        else:
+            c.privmsg(self.channel, "Invalid command.")
+
+def main():
+    character = Character("Character Name", 8, 8, 8, 8, 8, 8)
+    bot = MyBot(character, "#mystictavern", "TavernWench", "irc.sorcery.net")
+    bot.start()
+
+
+if __name__ == "__main__":
+    main()
